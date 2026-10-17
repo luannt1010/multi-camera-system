@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+.test-runs/
+data/
+*.log
+logs/
+dataset/

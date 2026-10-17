@@ -1,0 +1,80 @@
+cameras:
+  - id: "cam_01"
+    source:
+      type: "rtsp"
+      url: "rtsp://localhost:8554/live1.sdp"
+    output:
+      rtsp_url: "rtsp://127.0.0.1:8554/output/cam_01"
+    lines:
+        point: [[0.1, 0.5], [0.9, 0.5]]
+    prohibit_area:
+        polygon: [[0.1, 0.3], [0.9, 0.3], [0.9, 0.9], [0.1, 0.9]]
+
+  - id: "cam_02"
+    source:
+      type: "rtsp"
+      url: "rtsp://localhost:8554/live2.sdp"
+    output:
+      rtsp_url: "rtsp://127.0.0.1:8554/output/cam_02"
+    lines:
+        point: [ [ 0.1, 0.5 ], [ 0.9, 0.5 ] ]
+    prohibit_area:
+        polygon: [ [ 0.1, 0.3 ], [ 0.9, 0.3 ], [ 0.9, 0.9 ], [ 0.1, 0.9 ] ]
+
+  - id: "cam_03"
+    source:
+      type: "rtsp"
+      url: "rtsp://localhost:8554/live3.sdp"
+    prohibit_area:
+      polygon: [ [ 0.1, 0.3 ], [ 0.9, 0.3 ], [ 0.9, 0.9 ], [ 0.1, 0.9 ] ]
+    output:
+      rtsp_url: "rtsp://127.0.0.1:8554/output/cam_03"
+
+  - id: "cam_04"
+    source:
+      type: "rtsp"
+      url: "rtsp://localhost:8554/live4.sdp"
+    output:
+      rtsp_url: "rtsp://127.0.0.1:8554/output/cam_04"
+
+  - id: "cam_05"
+    coordinates: "pixels"
+    source:
+      type: "rtsp"
+      url: "rtsp://localhost:8554/live5.sdp"
+    output:
+      rtsp_url: "rtsp://127.0.0.1:8554/output/cam_05"
+    lines:
+      point: [[179, 679], [1578, 653]]
+
+  - id: "cam_06"
+    coordinates: "pixels"
+    source:
+      type: "rtsp"
+      url: "rtsp://localhost:8554/live6.sdp"
+    output:
+      rtsp_url: "rtsp://127.0.0.1:8554/output/cam_06"
+    prohibit_area:
+      polygon: [[861, 300], [1203, 295], [1320, 540], [780, 527]]
+
+  - id: "cam_07"
+    coordinates: "pixels"
+    source:
+      type: "rtsp"
+      url: "rtsp://localhost:8554/live7.sdp"
+    output:
+      rtsp_url: "rtsp://127.0.0.1:8554/output/cam_07"
+    lines:
+      point: [ [ 179, 679 ], [ 1578, 653 ] ]
+    prohibit_area:
+      polygon: [ [ 861, 300 ], [ 1203, 295 ], [ 1320, 540 ], [ 780, 527 ] ]
+
+  - id: "cam_08"
+    source:
+      type: "rtsp"
+      url: "rtsp://localhost:8554/live8.sdp"
+    output:
+      rtsp_url: "rtsp://127.0.0.1:8554/output/cam_08"
+
+
+

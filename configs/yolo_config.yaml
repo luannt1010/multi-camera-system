@@ -1,0 +1,32 @@
+model:
+  weights: "yolo11n.pt"
+
+data:
+  path: 'VisDrone.yaml'
+  classes: [0, 1, 2, 3, 4]
+
+train:
+  epochs: 100
+  imgsz: 640
+  batch: 32
+  device: 0
+  workers: 4
+
+#  optimizer: "AdamW"
+#  lr0: 0.001
+#  lrf: 0.01
+#  weight_decay: 0.0005
+
+  patience: 30
+  pretrained: true
+  amp: true
+  seed: 42
+
+  project: "runs/train"
+  name: "person_vehicle"
+  save: true
+  plots: true
+
+validation:
+  conf: 0.001
+  iou: 0.7

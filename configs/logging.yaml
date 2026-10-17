@@ -1,0 +1,8 @@
+logging:
+  level: INFO
+  console: true
+  file: logs/system.log
+  max_bytes: 10485760
+  backup_count: 5
+  queue_size: 4096
+  status_interval_seconds: 30

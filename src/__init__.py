@@ -1,0 +1,1 @@
+"""Multi-camera analytics pipeline."""
