@@ -1,128 +1,175 @@
 # Multi-camera system
 
-Pipeline: `SystemManager → CameraWorker (N) → FramePacket → InferenceWorker → DetectionPacket → Tracker → TrackingPacket → EventEngine → EventResults`.
+Hệ thống phân tích video từ nhiều camera bằng **YOLO** và **ByteTrack**: phát hiện đối tượng, theo dõi ID trong từng camera, đếm vượt vạch và phát hiện đi vào vùng cấm. Sự kiện được lưu vào **SQLite** kèm ảnh JPEG; video đã vẽ kết quả có thể xem bằng preview hoặc phát qua **RTSP**.
 
-Hai nhánh đầu ra: `EventWriter → SQLite + JPEG` và `Drawing Utils → FFmpeg → RTSP`.
+Pipeline được **SystemManager** điều phối; **FastAPI** cung cấp API xem trạng thái, bật/tắt camera và truy vấn lịch sử sự kiện. Mỗi camera thu nhận frame ở luồng riêng; hệ thống ưu tiên frame mới nhất khi xử lý không theo kịp nguồn.
 
-Logging ghi ra console và file UTF-8 `logs/system.log`, tự xoay file và gắn module/thread/camera. Cấu hình tại `configs/logging.yaml`; xem [hướng dẫn logging](docs/logging.md) để bật DEBUG, theo dõi log và thêm logger trong code.
+## Cấu hình YAML
 
-Preview và RTSP hiển thị FPS xử lý riêng cho từng camera. Log định kỳ có FPS capture/xử lý/output, số lần reconnect và độ trễ gần nhất/trung bình/P95. `e2e_ms` đo từ lúc Python nhận frame đến khi ghi/flush sang FFmpeg; xem định nghĩa và giới hạn phép đo trong hướng dẫn logging.
+| File | Mục đích |
+| --- | --- |
+| [configs/cameras.yaml](configs/cameras.yaml) | Nguồn camera, vạch đếm, vùng cấm và RTSP output khi chạy local. |
+| [configs/cameras.docker.yaml](configs/cameras.docker.yaml) | Cấu hình camera cho Docker; các camera đang bật dùng `host.docker.internal` để truy cập RTSP server trên host. |
+| [configs/model.yaml](configs/model.yaml) | Model YOLO, thiết bị suy luận và các tham số runtime. |
+| [configs/logging.yaml](configs/logging.yaml) | Mức log, file log, rotation và chu kỳ ghi trạng thái. |
+| [configs/yolo_config.yaml](configs/yolo_config.yaml) | Cấu hình huấn luyện/validation của `yolo/train.py`; không được nạp khi chạy pipeline. |
 
-## Chạy
+### Camera
 
-Project hiện dùng Python trong Conda `free_env`. Python 3.12 được dùng để kiểm thử. Cài dependency bằng `pip install -r requirements.txt` nếu dùng môi trường mới; FFmpeg phải có trong PATH. PyTorch/CUDA cần phù hợp với máy chạy.
+Thêm hoặc sửa phần tử trong danh sách `cameras:`. Ví dụ một camera có cả vạch và vùng cấm:
 
-Nguồn RTSP và đầu ra sau xử lý phải có đường dẫn riêng: ví dụ đọc `rtsp://localhost:8554/live1.sdp`, phát kết quả vào `rtsp://127.0.0.1:8554/output/cam_01`. `localhost` và `127.0.0.1` đều trỏ về máy này. Manager kiểm tra trùng stream trước khi khởi động, kể cả đầu ra camera này trùng nguồn camera khác.
+```yaml
+cameras:
+  - id: cam_01
+    coordinates: normalized
+    source:
+      url: "rtsp://localhost:8554/live1.sdp"
+    lines:
+      point: [[0.1, 0.5], [0.9, 0.5]]
+    prohibit_area:
+      polygon: [[0.1, 0.3], [0.9, 0.3], [0.9, 0.9], [0.1, 0.9]]
+    output:
+      rtsp_url: "rtsp://localhost:8554/output/cam_01"
+      width: 800
+      height: 450
+      fps: 15
+```
+
+| Trường | Cách thiết lập |
+| --- | --- |
+| `id` | ID duy nhất cho mỗi camera. |
+| `source.url` | URL RTSP, đường dẫn video như `data/video.mp4`, hoặc số webcam dạng chuỗi như `"0"`. Loại nguồn được tự nhận biết từ giá trị này. |
+| `coordinates` | `normalized` (mặc định): tọa độ trong khoảng 0–1; `pixels`: tọa độ theo frame gốc. |
+| `lines.point` | Hai điểm khác nhau tạo thành đoạn vạch đếm. Bỏ mục `lines` để tắt đếm vạch. |
+| `prohibit_area.polygon` | Ít nhất ba điểm tạo thành vùng có diện tích khác 0. Bỏ mục này để tắt phát hiện vùng cấm. |
+| `output.rtsp_url` | Đường dẫn publish kết quả; phải riêng biệt với mọi nguồn và output khác. Bỏ `output` hoặc đặt URL là `null` để tắt RTSP output của camera. |
+| `output.width/height/fps` | Kích thước phải dương và chẵn; FPS phải dương. Mặc định 800 × 450, giới hạn gửi 15 FPS. |
+
+Vạch và vùng cấm có thể bật độc lập; camera không có cả hai vẫn nhận diện, theo dõi và xuất video. Các URL hiện có trong YAML là cấu hình mẫu, cần đổi theo nguồn thực tế.
+
+### Model và runtime
+
+Nội dung hiện tại của `configs/model.yaml`:
+
+```yaml
+model:
+  weights: "yolo/results/detect/runs/train/person_vehicle/weights/best.pt"
+  device: "cuda:0"         # Đổi thành cpu nếu không dùng GPU CUDA.
+  imgsz: 640              # Kích thước ảnh đầu vào khi suy luận.
+  confidence: 0.5         # Ngưỡng confidence, từ 0 đến 1.
+  classes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # null: lấy mọi class của model.
+
+runtime:
+  model_mode: shared
+  batch_size: 8
+  tracking_fps: 15
+  event_queue_size: 128
+  database: "data/events.sqlite3"  # File SQLite lưu sự kiện.
+  reset_after_seconds: 3
+```
+
+- `weights`: phải trỏ tới file model đã chuẩn bị. Đường dẫn tương đối của weights, video và database được tính từ thư mục gốc dự án.
+- `shared`: một model xử lý batch nhiều camera. `per_camera`: mỗi camera một model, được gọi lần lượt trên luồng Manager.
+- `batch_size`: số frame tối đa mỗi lượt, tối đa một frame/camera; không chờ đủ batch.
+- `tracking_fps`: FPS dự kiến cho ByteTrack, không ép inference chạy ở FPS này.
+- `event_queue_size`: số frame có sự kiện tối đa chờ ghi database.
+- `reset_after_seconds`: ngưỡng bỏ frame cũ và reset trạng thái theo dõi khi gián đoạn dài.
+
+**Khi chạy bằng CLI hiện tại, `--model_mode` mặc định là `shared` và ghi đè giá trị trong YAML.** Muốn dùng model riêng, truyền rõ `--model_mode per_camera`.
+
+### Logging
+
+Giữ cấu hình mặc định trong `configs/logging.yaml` hoặc sửa `logging.level`, `logging.file` và `logging.status_interval_seconds` theo nhu cầu. Mặc định log ở mức `INFO`, ghi ra console và `logs/system.log`, xoay file khoảng 10 MiB, giữ 5 bản cũ và ghi trạng thái mỗi 30 giây. Xem [hướng dẫn logging](docs/logging.md) để đọc FPS, độ trễ và số lần reconnect.
+
+## Chạy local
+
+Các lệnh dưới đây chạy bằng **PowerShell**, từ thư mục gốc dự án.
+
+### 1. Chuẩn bị môi trường
+
+Dùng Python 3.12 và FFmpeg có trong `PATH`. Nếu dùng `cuda:0`, môi trường PyTorch phải hỗ trợ CUDA và phù hợp với GPU/driver của máy.
+
+Tạo môi trường Conda nếu chưa có; nếu đã có `free_env`, chỉ cần kích hoạt:
 
 ```powershell
+conda create -n free_env python=3.12
 conda activate free_env
-python -m src.manager --validate-config
+python -m pip install -r requirements.txt
+ffmpeg -version
+```
+
+Chuẩn bị file weights theo `model.weights`, sửa nguồn trong `configs/cameras.yaml`. Với nguồn/đầu ra RTSP, khởi động RTSP server riêng (ví dụ MediaMTX) và bảo đảm các stream nguồn đã hoạt động. Server RTSP không được khởi chạy bởi ứng dụng.
+
+### 2. Khởi chạy
+
+Chạy pipeline cùng API:
+
+```powershell
+python -m src.manager --cameras configs/cameras.yaml --model configs/model.yaml --model_mode shared
+```
+
+Các cách chạy khác, chọn theo nhu cầu:
+
+```powershell
+# API, pipeline và preview.
 python -m src.manager --display
+
+# API và preview, tắt RTSP output.
+python -m src.manager --display --no_stream
+
+# Dùng model riêng từng camera.
+python -m src.manager --model_mode per_camera
 ```
 
-Mặc định chạy không mở cửa sổ. `--display` hiển thị preview; Q, Esc hoặc đóng cửa sổ sẽ dừng toàn hệ thống. Ctrl+C cũng dừng và đợi ghi hết sự kiện đã nhận. Có thể chạy `python src/manager.py`.
+Mở [Swagger UI](http://127.0.0.1:8000/docs) để thử API; [trạng thái hệ thống](http://127.0.0.1:8000/status) để xem camera và metrics. Mặc định không mở preview. Nhấn `Ctrl+C` để dừng; khi có preview, `Q`, `Esc` hoặc đóng cửa sổ cũng dừng hệ thống và chờ ghi hết sự kiện đã nhận.
+
+Entry point hiện tại là **`python -m src.manager`**. Các cờ dùng dấu gạch dưới như `--model_mode`, `--no_stream`, `--log_file`; xem đầy đủ bằng `python -m src.manager --help`.
+
+## Chạy Docker
+
+Cần Docker chạy Linux container; để dùng GPU, Docker phải được cấu hình truy cập GPU NVIDIA. Ví dụ dưới đây dùng RTSP server trên host, tương ứng `configs/cameras.docker.yaml`.
+
+### 1. Build image
 
 ```powershell
-python -m src.manager --no-stream --duration 30
-python -m src.manager --cameras configs/cameras.yaml --model configs/model.yaml
+docker build -t multi-camera-system .
+New-Item -ItemType Directory -Force data, logs
 ```
 
-Để benchmark model dùng chung và model riêng từng camera, chọn `--model-mode shared` hoặc `--model-mode per_camera`; xem [hướng dẫn benchmark hai chế độ model](docs/benchmark-models.md).
-
-API quản lý chạy bằng `python -m src.api`, tự khởi động cùng một manager. Mở `http://127.0.0.1:8000/docs` để xem trạng thái/FPS, bật tắt camera và lọc lịch sử sự kiện. Xem [hướng dẫn API](docs/api.md) để biết endpoint, ví dụ request và cách chọn khoảng thời gian.
-
-Chạy API cùng cửa sổ preview bằng một lệnh:
+### 2. Khởi chạy container
 
 ```powershell
-python -m src.api --display
+docker run --rm --init --name multi-camera-system `
+  --gpus all `
+  --add-host host.docker.internal:host-gateway `
+  -p 8000:8000 `
+  -v "${PWD}/configs:/app/configs:ro" `
+  -v "${PWD}/yolo:/app/yolo:ro" `
+  -v "${PWD}/data:/app/data" `
+  -v "${PWD}/logs:/app/logs" `
+  multi-camera-system `
+  python -m src.manager `
+    --host 0.0.0.0 --port 8000 `
+    --cameras /app/configs/cameras.docker.yaml `
+    --model /app/configs/model.yaml `
+    --model_mode shared
 ```
 
-Thêm `--no-stream` nếu chỉ cần API và preview. Cả hai chế độ `shared` và `per_camera` đều hỗ trợ. Q, Esc hoặc đóng một cửa sổ preview sẽ dừng cả pipeline và API; Ctrl+C cũng dừng và đợi ghi hết sự kiện. Bật/tắt camera qua API sẽ mở/đóng cửa sổ tương ứng.
+Lệnh này khởi động pipeline và API, không mở preview. Truy cập [Swagger UI](http://127.0.0.1:8000/docs) từ host. Khi mở video bằng trình xem trên host, dùng địa chỉ server từ host, ví dụ `rtsp://localhost:8554/output/cam_01`; tên `host.docker.internal` trong YAML dùng cho kết nối từ container.
 
-Sửa nguồn thực tế trong `configs/cameras.yaml`: URL RTSP, đường dẫn video, hoặc số webcam. Các IP hiện có là cấu hình mẫu, cần thay theo hệ thống của bạn. Mỗi camera phải có ID và RTSP output riêng. Bỏ `output` hoặc đặt `rtsp_url: null` để tắt đầu ra camera đó. RTSP cần server nhận publish, ví dụ MediaMTX, được khởi động riêng.
+- **Model:** Dockerfile không copy weights và `.dockerignore` loại `yolo/`, `*.pt`; mount `yolo/` để đường dẫn weights mặc định tồn tại trong container.
+- **Dữ liệu:** mount `data/` và `logs/` để giữ database/log sau khi container bị xóa. Trên Linux, hai thư mục cần cho phép UID/GID `10001` của container ghi.
+- **Mạng RTSP:** `localhost` trong container trỏ về chính container. Dùng `host.docker.internal` nếu RTSP server ở host, hoặc địa chỉ camera/server thực tế. Docker Desktop cung cấp tên này; `--add-host` bổ sung ánh xạ cho Docker Engine. Xem [tài liệu Docker về host gateway](https://docs.docker.com/reference/cli/docker/container/run/#add-entries-to-container-hosts-file---add-host).
+- **CPU:** đặt `model.device: cpu` và bỏ `--gpus all` khỏi lệnh chạy.
+- **Lệnh khởi động:** ví dụ ghi đè `CMD` hiện tại của Dockerfile (vẫn gọi `src.api`) bằng entry point `src.manager`.
 
-`configs/model.yaml` trỏ tới weight đã có trong repository. Mặc định giữ GPU `cuda:0`; đặt `device: cpu` nếu không có CUDA. `classes: [0]` giữ bộ lọc class hiện tại; đặt `classes: null` để xử lý mọi class của model.
+Dừng từ terminal khác bằng `docker stop --timeout 60 multi-camera-system`.
 
-## Cấu hình và tọa độ
+## Tài liệu chi tiết
 
-- `lines.point` (tùy chọn): 2 điểm khác nhau; `line.point` cũ vẫn được hỗ trợ.
-- `prohibit_area.polygon` (tùy chọn): ít nhất 3 điểm, diện tích khác 0.
-- `coordinates: normalized` (mặc định): các giá trị từ 0 đến 1, nhân với chiều rộng/cao frame nguồn. Dùng `coordinates: pixels` nếu cấu hình là pixel.
-- `output.width`, `output.height`: số dương chẵn, mặc định 800 × 450; `output.fps`: mặc định 15. Output giữ tỷ lệ ảnh bằng padding đen.
-- Đường dẫn tương đối của model, video và database tính từ thư mục gốc project, không phụ thuộc thư mục chạy lệnh.
-- `runtime.batch_size`: giới hạn số frame thu thập mỗi lượt, tối đa một frame/camera; chọn lần lượt để camera cuối danh sách không bị bỏ đói. Model dùng chung xử lý cả batch; model riêng xử lý nhóm frame theo camera.
-- `runtime.model_mode`: `shared` (mặc định) dùng một model cho batch nhiều camera; `per_camera` dùng model riêng từng camera, chia batch theo camera rồi inference lần lượt.
-- `runtime.tracking_fps`: FPS xử lý dự kiến dùng cho ByteTrack; nên chỉnh gần tốc độ inference thực tế mỗi camera.
-- `runtime.event_queue_size`: giới hạn số frame có sự kiện đang đợi ghi (mặc định 128). Frame độ phân giải cao sẽ cần nhiều RAM hơn; giảm thông số nếu RAM hạn chế.
-- `runtime.reset_after_seconds`: bỏ frame quá cũ và reset danh tính tracker khi gián đoạn dài. Mỗi lần mở lại nguồn cũng reset danh tính; bộ đếm vẫn giữ trong phiên chạy.
-
-Line và polygon cấu hình độc lập theo từng camera:
-
-| Cấu hình | Xử lý sự kiện |
-|---|---|
-| Chỉ `lines.point` | Đếm vượt vạch, không kiểm tra vùng cấm |
-| Chỉ `prohibit_area.polygon` | Kiểm tra vào vùng cấm, không đếm vượt vạch |
-| Cả hai | Xử lý cả hai loại sự kiện |
-| Không có cả hai | Chỉ detection/tracking/preview/RTSP, bỏ qua EventEngine và gửi sự kiện |
-
-Ví dụ camera chỉ đếm vượt vạch:
-
-```yaml
-- id: cam_line
-  source:
-    url: "rtsp://localhost:8554/live1.sdp"
-  lines:
-    point: [[0.1, 0.5], [0.9, 0.5]]
-```
-
-Ví dụ camera chỉ kiểm tra vùng cấm:
-
-```yaml
-- id: cam_zone
-  source:
-    url: "rtsp://localhost:8554/live2.sdp"
-  prohibit_area:
-    polygon: [[0.1, 0.3], [0.9, 0.3], [0.9, 0.9], [0.1, 0.9]]
-```
-
-Ví dụ camera không có sự kiện:
-
-```yaml
-- id: cam_preview
-  source:
-    url: "0"
-```
-
-Các mục ví dụ được đặt trong danh sách `cameras:`. Có thể thêm `output.rtsp_url` riêng như cấu hình camera hiện tại. Bỏ mục line/polygon hoặc đặt giá trị `null` để tắt loại sự kiện đó. Nếu đã cung cấp danh sách điểm thì danh sách phải hợp lệ; `[]`, sai số chiều, điểm không hữu hạn, line trùng điểm và polygon không có diện tích đều bị báo lỗi trước khi khởi động. Khi mọi camera đều tắt sự kiện, manager không tạo writer hoặc mở database. Camera không có line cũng không hiển thị bộ đếm Left/Right.
-
-## Hoạt động và giới hạn
-
-Mỗi camera có capture thread và một slot frame mới nhất. Mặc định một model dùng chung xử lý batch; có thể chọn model riêng từng camera để benchmark. Tracker và trạng thái sự kiện tách theo camera. Thêm camera qua YAML, không cần sửa manager. Không có hàng đợi frame tăng vô hạn; khi quá tải, frame cũ được bỏ để giảm độ trễ. Đây là xử lý realtime nên không bảo đảm nhận mọi lần vượt vạch giữa hai frame bị bỏ.
-
-Mỗi RTSP có worker và một slot riêng, giới hạn tốc độ gửi, thử kết nối lại sau lỗi. Watchdog kết thúc FFmpeg nếu ghi pipe bị treo quá 3 giây. FPS output là tốc độ gửi tối đa: khi inference chậm hơn, hệ thống không tự nội suy hay lặp frame để đạt FPS đó.
-
-`EventWriter` quản lý cả ghi và đọc SQLite. Pipeline gửi qua `WriterWorker.submit()`, ghi trên một writer thread và dùng WAL; mỗi request API tạo một `EventWriter`, truy vấn rồi đóng trong cùng thread bằng kết nối riêng. JPEG snapshot lưu base64 ngay trong bảng `events`, giữ định dạng module cũ. Chỉ tạo bản ghi khi đi vào vùng cấm hoặc vượt đoạn vạch; không lưu lặp ở mọi frame còn trong vùng. Ảnh snapshot là ảnh nguồn chưa vẽ, timestamp lấy bằng `datetime.now()` theo giờ hệ thống lúc xử lý sự kiện. Các sự kiện cùng frame được ghi chung một transaction. Khi writer lỗi hoặc queue đầy, hệ thống báo lỗi và dừng thay vì âm thầm mất bản ghi; sự kiện chưa nhận do queue đầy không được lưu. Chưa có chính sách xóa dữ liệu cũ hay khôi phục bộ đếm sau restart.
-
-Vượt vạch được xác định bằng tâm bbox, giao với đoạn vạch thực tế. Tên `left_to_right` tương ứng chuyển từ phía âm sang phía dương theo tích có hướng của hai điểm cấu hình; đảo thứ tự điểm sẽ đảo hướng. Vùng cấm bao gồm đường biên. Trạng thái ID không xuất hiện trong 60 giây được dọn.
-
-`SystemManager.run()` / `start()` là hàm blocking, chỉ chạy một lần trên mỗi instance. `stop()` có thể gọi từ thread khác; `status()` trả về trạng thái camera, số frame xử lý, độ dài queue sự kiện và số frame RTSP bị thay thế. Khi dừng, manager ngừng capture, chờ worker, đóng FFmpeg và ghi hết queue sự kiện. Lỗi cleanup được báo rõ. Timeout capture RTSP là 3 giây; webcam phụ thuộc driver, manager báo lỗi nếu capture thread không dừng đúng hạn.
-
-## Kiểm thử
-
-Unit test riêng cho đếm vượt vạch, vùng cấm và state theo track ID: xem [hướng dẫn test sự kiện](docs/testing-events.md).
-
-```powershell
-pip install -r requirements-dev.txt
-python -m pytest
-```
-
-Nếu môi trường sandbox không ghi được thư mục tạm mặc định, chọn thư mục mới trong workspace:
-
-```powershell
-New-Item -ItemType Directory -Force .test-runs
-python -m pytest --basetemp=.test-runs/manual-run
-```
-
-Các test bao phủ hình học và chiều vượt vạch, entry/re-entry, expiry và cô lập camera, snapshot SQLite, drain/error/overload writer, latest-frame queue, fairness batch, reset sau reconnect, cleanup khi lỗi, FFmpeg encode thật và watchdog với process treo. Test FFmpeg sẽ skip nếu binary không có trong PATH.
-
-Đã chạy smoke test riêng với 2 video tổng hợp, model huấn luyện thật, ByteTrack thật và SQLite thật trên CPU: 30 frame trong cửa sổ chạy 4 giây, queue ghi rỗng và mọi worker đã dừng. Video tổng hợp không kiểm chứng độ chính xác nhận diện hay chất lượng sự kiện trên cảnh thực. Chưa kiểm chứng camera mạng và publish/playback RTSP xuyên suốt với server thật; cần kiểm thử tải trên phần cứng và nguồn triển khai trước khi chốt số camera/FPS.
+| Tài liệu | Nội dung |
+| --- | --- |
+| [API](docs/api.md) | Endpoint, bật/tắt camera, lọc lịch sử và phân trang sự kiện. |
+| [Logging](docs/logging.md) | Cấu hình log, FPS/độ trễ, reconnect và cách theo dõi lỗi. |
+| [Benchmark model](docs/benchmark-models.md) | Phương pháp so sánh `shared` và `per_camera`, điều kiện đo và cách đọc kết quả. |
+| [Kiểm thử sự kiện](docs/testing-events.md) | Quy ước đếm vạch/vùng cấm và cách chạy kiểm thử. |
