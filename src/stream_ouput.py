@@ -190,69 +190,67 @@ class StreamOutput:
         self.process = None
 
 
-def main():
-    controller = configure_logging()
-
-    # Dùng webcam để thử. Có thể thay 0 bằng URL RTSP nguồn.
-    cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        cap.release()
-        logger.error("Cannot open demo camera")
-        controller.close()
-        raise RuntimeError("Không mở được camera")
-
-    # Chỉ tạo MỘT LẦN trước vòng lặp.
-    streamer = StreamOutput(
-        output_url="rtsp://127.0.0.1:8554/cam_01",
-        width=800,
-        height=650,
-        fps=15,
-    )
-
-    next_frame_time = 0.0
-
-    try:
-        while True:
-            success, frame = cap.read()
-
-            if not success:
-                logger.error("Cannot read demo camera frame")
-                break
-
-            # Tiếp tục đọc nguồn, chỉ gửi tối đa theo FPS đã chọn.
-            now = time.monotonic()
-
-            if now < next_frame_time:
-                continue
-
-            next_frame_time = now + 1.0 / streamer.fps
-
-            # Trong project của bạn, đây là frame sau khi đã vẽ
-            # box, track ID, polygon, line và bộ đếm.
-            annotated_frame = frame.copy()
-
-            cv2.putText(
-                annotated_frame,
-                "Camera 01",
-                (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-
-            streamer.send(annotated_frame)
-
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt; stopping stream demo")
-
-    finally:
-        streamer.close()
-        cap.release()
-        logger.info("Demo camera and FFmpeg closed")
-        controller.close()
-
-
-if __name__ == "__main__":
-    main()
+# def main():
+#     controller = configure_logging()
+#
+#     cap = cv2.VideoCapture(0)
+#
+#     if not cap.isOpened():
+#         cap.release()
+#         logger.error("Cannot open demo camera")
+#         controller.close()
+#         raise RuntimeError("Không mở được camera")
+#
+#     # Chỉ tạo MỘT LẦN trước vòng lặp.
+#     streamer = StreamOutput(
+#         output_url="rtsp://127.0.0.1:8554/cam_01",
+#         width=800,
+#         height=650,
+#         fps=15,
+#     )
+#
+#     next_frame_time = 0.0
+#
+#     try:
+#         while True:
+#             success, frame = cap.read()
+#
+#             if not success:
+#                 logger.error("Cannot read demo camera frame")
+#                 break
+#
+#             # Tiếp tục đọc nguồn, chỉ gửi tối đa theo FPS đã chọn.
+#             now = time.monotonic()
+#
+#             if now < next_frame_time:
+#                 continue
+#
+#             next_frame_time = now + 1.0 / streamer.fps
+#
+#             # box, track ID, polygon, line và bộ đếm.
+#             annotated_frame = frame.copy()
+#
+#             cv2.putText(
+#                 annotated_frame,
+#                 "Camera 01",
+#                 (20, 40),
+#                 cv2.FONT_HERSHEY_SIMPLEX,
+#                 1,
+#                 (0, 255, 0),
+#                 2,
+#             )
+#
+#             streamer.send(annotated_frame)
+#
+#     except KeyboardInterrupt:
+#         logger.info("Keyboard interrupt; stopping stream demo")
+#
+#     finally:
+#         streamer.close()
+#         cap.release()
+#         logger.info("Demo camera and FFmpeg closed")
+#         controller.close()
+#
+#
+# if __name__ == "__main__":
+#     main()

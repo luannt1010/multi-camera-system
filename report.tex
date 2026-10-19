@@ -1,0 +1,486 @@
+% !TeX program = xelatex
+% Báo cáo tự chứa; biên dịch bằng XeLaTeX (khuyến nghị) hoặc pdfLaTeX có VnTeX.
+% Chỉ mô tả chức năng có trong source; hình minh họa không bổ sung thuật toán mới.
+\documentclass[10pt,a4paper]{article}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+  \usepackage[T5]{fontenc}
+  \usepackage[vietnamese]{babel}
+\else
+  \usepackage{fontspec}
+  \IfFontExistsTF{Latin Modern Roman}
+    {\setmainfont{Latin Modern Roman}}{\setmainfont{Times New Roman}}
+  \IfFontExistsTF{Latin Modern Mono}
+    {\setmonofont{Latin Modern Mono}[Scale=MatchLowercase]}
+    {\setmonofont{Consolas}[Scale=MatchLowercase]}
+\fi
+\usepackage[margin=1.7cm]{geometry}
+\usepackage{amsmath,booktabs,array,tabularx,enumitem,fancyvrb}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc}
+\usepackage[unicode,hidelinks]{hyperref}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+\setlist[itemize]{leftmargin=1.3em,itemsep=2pt,topsep=3pt}
+\renewcommand{\arraystretch}{1.13}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcommand{\shared}{\texttt{shared}}
+\newcommand{\percam}{\texttt{per\_camera}}
+\DefineVerbatimEnvironment{Code}{Verbatim}{fontsize=\footnotesize}
+\tikzset{
+  box/.style={draw=black!60,rounded corners=2pt,align=center,
+    inner sep=5pt,font=\small,minimum height=0.9cm},
+  flow/.style={-{Stealth[length=2mm]},thick,draw=black!70},
+  note/.style={font=\footnotesize,align=center}
+}
+
+\begin{document}
+\begin{center}
+  {\Large\bfseries HỆ THỐNG PHÂN TÍCH VIDEO NHIỀU CAMERA}\\[3pt]
+  {\normalsize Workflow, xử lý sự kiện, vận hành và đánh giá hiệu năng}\\[2pt]
+  {\small Báo cáo: 18/10/2026 \quad|\quad Benchmark local: 17/10/2026}
+\end{center}
+\vspace{-5pt}
+
+\section{Workflow và trách nhiệm từng thành phần}
+Hệ thống nhận nhiều luồng video, dùng YOLO và ByteTrack để nhận diện/theo dõi,
+đếm vượt vạch và phát hiện vào vùng cấm. Kết quả được lưu SQLite, vẽ lên video
+và phát RTSP; FastAPI cung cấp trạng thái, điều khiển camera và lịch sử sự kiện.
+
+\begin{center}
+\begin{tikzpicture}
+\node[box,text width=2.65cm] (cfg) at (0,0)
+  {\textbf{YAML}\\Camera, model, logging};
+\node[box,text width=3.35cm] (mgr) at (4.1,0)
+  {\textbf{SystemManager}\\Vòng điều phối trung tâm};
+\node[box,text width=3.4cm] (api) at (8.6,0)
+  {\textbf{FastAPI}\\Trạng thái, bật/tắt, lịch sử};
+\draw[flow] (cfg)--(mgr);
+\draw[flow,<->] (mgr)--(api);
+\node[box,text width=3.05cm] (cap) at (-0.4,-1.75)
+  {\textbf{CameraWorker $\times N$}\\FramePacket\\Frame mới nhất};
+\node[box,text width=3.05cm] (infer) at (3.45,-1.75)
+  {\textbf{InferenceWorker}\\DetectionPacket\\Bbox, class, confidence};
+\node[box,text width=3.05cm] (track) at (7.3,-1.75)
+  {\textbf{Tracker}\\TrackingPacket\\Bbox và track ID};
+\node[box,text width=3.05cm] (event) at (11.15,-1.75)
+  {\textbf{EventEngine}\\EventResults\\Crossing, zone entry};
+\draw[flow] (mgr.south)--(infer.north);
+\draw[flow] (cap)--(infer);
+\draw[flow] (infer)--(track);
+\draw[flow] (track)--(event);
+\node[box,text width=4.05cm] (writer) at (7.0,-3.65)
+  {\textbf{WriterWorker $\to$ EventWriter}\\SQLite + snapshot JPEG Base64};
+\node[box,text width=4.45cm] (out) at (12.0,-3.65)
+  {\textbf{Drawing $\to$ StreamWorker}\\FFmpeg $\to$ MediaMTX $\to$ RTSP};
+\draw[flow] (event.south)--++(0,-0.25)-|(writer.north);
+\draw[flow] (event.south)--++(0,-0.25)-|(out.north);
+\end{tikzpicture}
+
+{\small Hình 1. Pipeline dữ liệu; Manager gọi inference, tracker và event engine.
+Preview local dùng cùng ảnh đã vẽ với nhánh RTSP.}
+\end{center}
+
+\begin{tabularx}{\linewidth}{@{}p{3.05cm}p{3.3cm}Y@{}}
+\toprule
+\textbf{Thành phần} & \textbf{Phạm vi / thực thi} & \textbf{Nhiệm vụ}\\
+\midrule
+CameraWorker & Mỗi camera, 1 thread & Đọc nguồn, reconnect, timestamp,
+generation; queue 1 frame, thay frame cũ khi đầy.\\
+InferenceWorker & Chung hoặc riêng model & YOLO suy luận trên batch do Manager gom;
+trả kết quả về đúng camera.\\
+Tracker & ByteTrack riêng/camera & Giữ track ID độc lập; một registry quản lý,
+chạy trong vòng Manager.\\
+EventEngine & Trạng thái riêng/camera & Nhớ phía vạch, vị trí trước, trạng thái
+trong vùng và tổng đếm; chỉ tạo khi có quy tắc.\\
+WriterWorker & Một thread ghi DB chung & Queue 128, ghi giao dịch cho frame có
+sự kiện; queue đầy báo lỗi, không âm thầm bỏ sự kiện.\\
+StreamWorker & Mỗi camera có RTSP & Một thread + một FFmpeg/camera; queue 1 frame,
+giới hạn FPS xuất và tự phục hồi pipe.\\
+API và logging & Dùng chung hệ thống & API đưa lệnh về Manager; listener riêng
+ghi log, không dùng \texttt{print}.\\
+\bottomrule
+\end{tabularx}
+
+\subsection*{Hai phương án được benchmark}
+\shared{}: một YOLO xử lý batch nhiều camera.
+\percam{}: mỗi camera giữ một YOLO, các model được gọi \textbf{tuần tự}.
+Collector lấy tối đa một frame/camera, theo round-robin, tối đa
+\texttt{batch\_size}; do đó model riêng thực tế nhận batch 1 trong mỗi lượt.
+Tracker và EventEngine vẫn riêng theo camera ở cả hai phương án.
+Hệ thống dùng threading và subprocess FFmpeg; chưa chia inference thành nhiều
+process hay nhiều GPU.
+
+\newpage
+\section{Từ track ID đến sự kiện}
+\subsection*{Điểm đại diện và kiểm tra hình học}
+Với bbox $(x_1,y_1,x_2,y_2)$, code dùng \textbf{tâm bbox}
+$C=((x_1+x_2)/2,(y_1+y_2)/2)$.
+Quy tắc áp dụng cho cùng track ID trong cùng camera, trên tọa độ frame gốc.
+
+\begin{center}
+\begin{tikzpicture}
+\node[box,text width=8.2cm] (root) at (0,0)
+  {\textbf{TrackingPacket: bbox + track ID}\\
+  Tính tâm $C$; đọc trạng thái trước của ID; loại trạng thái quá TTL};
+\node[box,text width=6.8cm] (line) at (-4.1,-1.65)
+  {\textbf{Có line $AB$: kiểm tra vượt vạch}\\
+  Tâm đổi phía: $s(C_{\rm prev})s(C)<0$\\
+  Đoạn chuyển động $C_{\rm prev}C$ giao đoạn $AB$};
+\node[box,text width=6.8cm] (zone) at (4.1,-1.65)
+  {\textbf{Có polygon: kiểm tra vào vùng}\\
+  Tâm trong hoặc trên biên: \texttt{inside=True}\\
+  Vào mới = inside hiện tại và trước đó ở ngoài};
+\draw[flow] (root.south)--++(0,-0.25)-|(line.north);
+\draw[flow] (root.south)--++(0,-0.25)-|(zone.north);
+\node[box,text width=6.8cm] (count) at (-4.1,-3.2)
+  {\textbf{Ghi một crossing và tăng bộ đếm chiều}\\
+  $s(C)>0$: \texttt{left\_to\_right}; $s(C)<0$: chiều ngược\\
+  Lưu phía/vị trí khác 0 gần nhất};
+\node[box,text width=6.8cm] (entry) at (4.1,-3.2)
+  {\textbf{Ghi một \texttt{zone\_entry}}\\
+  Ở trong liên tục: không lặp sự kiện\\
+  Ra rồi vào lại: được ghi lượt mới};
+\draw[flow] (line)--(count);
+\draw[flow] (zone)--(entry);
+\end{tikzpicture}
+
+{\small Hình 2. Hai nhánh độc lập; thiếu line hoặc polygon thì bỏ nhánh tương ứng.}
+\end{center}
+
+Tích có hướng của điểm $P$ đối với vạch có thứ tự $A\to B$:
+\[
+s(P)=(B_x-A_x)(P_y-A_y)-(B_y-A_y)(P_x-A_x).
+\]
+Sau khi xác nhận đổi phía, code kiểm tra thêm
+$m(A)m(B)\leq0$, với $m$ là cùng phép tính trên đường $C_{\rm prev}\to C$.
+Hai điều kiện giúp loại trường hợp chỉ cắt phần kéo dài ngoài hai đầu vạch.
+
+\begin{center}
+\begin{minipage}[t]{0.49\linewidth}
+\centering
+\begin{tikzpicture}[font=\footnotesize,scale=0.95]
+\draw[flow] (0,1)--(4.7,1);
+\node[above] at (0,1) {$A$}; \node[above] at (4.7,1) {$B$};
+\draw[dashed,black!45] (4.7,1)--(6.15,1);
+\draw[flow,draw=green!45!black] (2.0,2)--(2.0,0);
+\fill[green!45!black] (2,2) circle(2pt);
+\fill[green!45!black] (2,0) circle(2pt);
+\node[left] at (2,2) {$C_{\rm prev}$};
+\node[left] at (2,0) {$C$};
+\draw[flow,dashed,draw=red!65!black] (5.6,2)--(5.6,0);
+\node[below,align=center] at (2,-0.25) {Cắt đoạn: đếm 1 lượt};
+\node[below,align=center] at (5.5,-0.25) {Ngoài đoạn:\\không đếm};
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\linewidth}
+\centering
+\begin{tikzpicture}[font=\footnotesize,scale=0.95]
+\filldraw[fill=blue!5,draw=black!60] (0.5,0)--(4.7,0)--(5,1.75)--(1,2)--cycle;
+\draw[flow] (-0.1,0.8)--(2,0.8);
+\draw[flow] (2,0.8)--(4,1.1);
+\fill (-0.1,0.8) circle(2pt);
+\fill[blue!70!black] (2,0.8) circle(2pt);
+\fill[blue!70!black] (4,1.1) circle(2pt);
+\node[above] at (-0.1,0.8) {Ngoài};
+\node[above] at (2,0.8) {Trong};
+\node[above] at (4,1.1) {Trong};
+\node[below] at (2,-0.25) {Ngoài $\to$ trong: 1 entry};
+\node[below] at (2,-0.65) {Trong $\to$ trong: không ghi lặp};
+\end{tikzpicture}
+\end{minipage}
+
+{\small Hình 3. Minh họa crossing hợp lệ và chuyển trạng thái vào vùng.}
+\end{center}
+
+\begin{itemize}
+\item \textbf{Chiều đếm:} tên \texttt{left\_to\_right}/\texttt{right\_to\_left}
+phụ thuộc thứ tự hai đầu vạch, không nhất thiết là trái/phải trên màn hình.
+Nếu tâm đúng trên vạch ($s=0$), giữ phía khác 0 trước đó để xét lượt sau.
+\item \textbf{Vùng cấm:} lần đầu thấy một ID đã ở trong vùng cũng tạo entry;
+biên polygon tính là trong. Một ID có thể được đếm nhiều lần khi vượt/ra vào lại.
+\item \textbf{Quản lý trạng thái:} ID không thấy quá 60 giây bị xóa trạng thái
+(TTL mặc định trong schema); reconnect, gap lớn hoặc bật/tắt sẽ reset danh tính,
+giữ tổng đếm trong phiên. Đổi ID có thể gây đếm lại đối tượng.
+\item \textbf{Giới hạn hiện tại:} chưa có vùng đệm, cooldown hay xác nhận ba
+quan sát cho sự kiện. Thiết lập hai frame xác nhận của ByteTrack là logic
+tracker, không phải bộ lọc sự kiện.
+\end{itemize}
+
+Writer chỉ ghi các \texttt{zone\_entry} hoặc
+\texttt{crossed\_left\_to\_right}/\texttt{crossed\_right\_to\_left}.
+Mỗi bản ghi gồm thời điểm \texttt{datetime.now()}, camera, track ID, loại sự
+kiện và snapshot JPEG chất lượng 80 lưu Base64. Các sự kiện cùng frame ghi
+trong một transaction SQLite (WAL); API đọc bằng connection riêng.
+
+\newpage
+\section{Cấu hình và vận hành}
+\subsection*{Ba nhóm cấu hình}
+\begin{tabularx}{\linewidth}{@{}p{3.2cm}Y@{}}
+\toprule
+\textbf{File / thành phần} & \textbf{Thiết lập hiện tại và ý nghĩa}\\
+\midrule
+\texttt{configs/model.yaml} &
+Weights \texttt{best.pt} tại
+\texttt{yolo/results/detect/runs/train/person\_vehicle/weights/};
+\texttt{device=cuda:0}, \texttt{imgsz=640}, \texttt{confidence=0.5},
+\texttt{classes=[0,\ldots,9]}. Ngưỡng confidence lọc detection;
+tên class theo model đã huấn luyện.\\
+Runtime trong model YAML &
+\texttt{model\_mode=shared}, \texttt{batch\_size=8},
+\texttt{tracking\_fps=15}, \texttt{reset\_after\_seconds=3};
+queue sự kiện 128; DB \texttt{data/events.sqlite3}.
+Batch 8 là tối đa, không bắt buộc đợi đủ 8 frame.\\
+ByteTrack trong source &
+Activation 0,5; high-confidence 0,6; lost buffer 30;
+minimum consecutive frames 2; minimum IoU 0,1.
+\texttt{tracking\_fps=15} là tham số tracker, không khóa FPS xử lý ở 15.\\
+\texttt{configs/cameras.yaml} &
+ID duy nhất, URL nguồn, URL output riêng, tọa độ, line/polygon tùy chọn;
+không có cả hai vẫn chạy detect/tracking/video.\\
+\texttt{configs/logging.yaml} &
+INFO; console + UTF-8 \texttt{logs/system.log}; xoay file 10 MiB,
+giữ 5 bản cũ; queue logging 4096; status mỗi 30 giây.\\
+\bottomrule
+\end{tabularx}
+
+Ví dụ một camera (các điểm chỉ minh họa, phải khớp cảnh thực tế):
+\begin{Code}
+cameras:
+  - id: "cam_01"
+    coordinates: "normalized"
+    source: {type: "rtsp", url: "rtsp://localhost:8554/live1.sdp"}
+    output:
+      rtsp_url: "rtsp://localhost:8554/output/cam_01"
+      width: 800
+      height: 450
+      fps: 15
+    lines:
+      point: [[0.1, 0.5], [0.9, 0.5]]
+    prohibit_area:
+      polygon: [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+\end{Code}
+\textbf{Tọa độ:} \texttt{normalized} là $[0,1]$, đổi thành $(xW,yH)$;
+\texttt{pixels} dùng pixel frame nguồn. Line có đúng hai đầu khác nhau;
+polygon có ít nhất ba điểm, diện tích khác 0. Preview/RTSP resize sau xử lý:
+ảnh chụp display khác kích thước cần quy đổi về frame gốc trước khi đưa vào YAML.
+Chẳng hạn ảnh 1920$\times$1080 của frame 1280$\times$720 cần nhân tọa độ với $2/3$
+nếu chỉ resize toàn ảnh, không crop/padding.
+
+\subsection*{Chạy local và sử dụng API}
+Cần môi trường Python có dependencies trong \texttt{requirements.txt},
+PyTorch phù hợp CUDA, weights và FFmpeg trong PATH; nguồn RTSP đã được phát.
+Từ thư mục project, một lệnh chạy API cùng preview:
+\begin{Code}
+python -m src.manager --display --model_mode shared --log_file logs/local.log
+\end{Code}
+Bỏ \texttt{--display} để chạy không cửa sổ; \texttt{--no\_stream} tắt phát RTSP;
+\texttt{--cameras}/\texttt{--model} đổi YAML; dùng
+\texttt{--model\_mode per\_camera} cho đối chứng.
+API mặc định tại \texttt{127.0.0.1:8000}, Swagger \texttt{/docs};
+chạy đúng một Uvicorn worker để tránh tạo trùng pipeline/model.
+
+\begin{tabularx}{\linewidth}{@{}p{6cm}Y@{}}
+\toprule
+\textbf{Endpoint} & \textbf{Mục đích}\\
+\midrule
+\texttt{GET /status} & Toàn pipeline, queue và metrics từng camera.\\
+\texttt{GET /cameras}, \texttt{GET /cameras/\{id\}} & Trạng thái,
+enabled, FPS và lỗi.\\
+\texttt{PATCH /cameras/\{id\}} & Body \texttt{\{"enabled": false\}} hoặc
+\texttt{true}; điều khiển camera đã có trong YAML.\\
+\texttt{GET /events} & Lọc \texttt{camera\_id}, \texttt{start\_time},
+\texttt{end\_time}; phân trang \texttt{limit} (100, tối đa 500), \texttt{offset}.\\
+\bottomrule
+\end{tabularx}
+Thời gian truy vấn dạng \texttt{2026-10-17T16:00:00}, giờ máy không kèm múi giờ;
+bao gồm cả hai mốc. Bật/tắt không ghi lại YAML, giữ model và tổng đếm.
+Ctrl+C hoặc Q/Esc/đóng preview sẽ dừng pipeline/API và xả queue sự kiện.
+
+\newpage
+\section{Phục hồi, logging và triển khai Docker/MediaMTX}
+\subsection*{Kết nối lại và theo dõi vận hành}
+\textbf{Nguồn camera:} RTSP có timeout mở/đọc 3 giây. Lỗi mở hoặc đọc
+$\to$ disconnected $\to$ xóa frame chờ, đóng nguồn $\to$ đợi 2 giây rồi thử lại.
+Mỗi lần mở thành công tăng \texttt{generation}; chỉ báo connected sau frame tốt
+đầu tiên. \texttt{connection\_attempts} đếm mọi lần mở,
+\texttt{reconnect\_attempts} đếm lần thử sau khi từng có hình;
+\texttt{reconnect\_count} chỉ tăng khi thật sự nhận lại frame.
+Manager bỏ frame cũ hơn 3 giây; generation đổi hoặc gap $>3$ giây sẽ reset
+tracker/trạng thái sự kiện/FPS, giữ tổng đếm hai chiều.
+
+\textbf{Đầu ra:} FFmpeg lỗi/broken pipe được khởi động lại; lần gửi lỗi đợi
+2 giây trước khi thử tiếp. Watchdog xử lý pipe ghi treo quá 3 giây.
+Encoder là \texttt{libx264} trên CPU, preset \texttt{ultrafast},
+tune \texttt{zerolatency}, RTSP qua TCP; chưa dùng NVENC.
+
+\textbf{Logging:} dùng queue/listener để ghi console và file, có timestamp,
+level, module, thread, camera ID; che thông tin đăng nhập trong URL.
+INFO ghi khởi động, kết nối/phục hồi, commit DB và status; DEBUG ghi chi tiết
+sự kiện/inference; WARNING/ERROR ghi mất nguồn, lỗi FFmpeg/worker/DB.
+\texttt{--log\_level DEBUG} tăng chi tiết, \texttt{--log\_file} đổi nơi lưu.
+Status mỗi 30 giây gồm FPS capture/xử lý/output, tổng frame, reconnect, queue,
+drop, send failure và độ trễ frame-age/inference/processing/queue/send/E2E.
+FPS và latency last/avg/P95 phản ánh \textbf{cửa sổ 5 giây}; không phải thống kê
+toàn phiên. FPS xử lý cũng được vẽ lên từng camera.
+
+\subsection*{Vai trò MediaMTX và mạng triển khai}
+MediaMTX là \textbf{server luồng độc lập}; ứng dụng không tự tạo server RTSP.
+Với video file, FFmpeg phát nguồn lên server trước; với camera thật, có thể
+đọc URL camera trực tiếp. Nhánh output publish sang đường dẫn riêng.
+\begin{center}
+\begin{tikzpicture}
+\node[box,text width=3.3cm] (s) at (0,0)
+  {Camera / FFmpeg nguồn\\\texttt{/live1.sdp}};
+\node[box,text width=3.3cm] (m) at (4.4,0)
+  {\textbf{MediaMTX:8554}\\Nhận và phân phối RTSP};
+\node[box,text width=4.8cm] (a) at (10,0)
+  {\textbf{Ứng dụng Docker + GPU}\\Đọc nguồn; xử lý; FFmpeg xuất};
+\draw[flow] (s)--(m);
+\draw[flow] (m.north east) to[bend left=16]
+  node[above,font=\footnotesize]{đọc nguồn} (a.north west);
+\draw[flow] (a.south west) to[bend left=16]
+  node[below,font=\footnotesize]{publish \texttt{/output/cam\_01}} (m.south east);
+\end{tikzpicture}
+\end{center}
+Client/VLC đọc \texttt{rtsp://127.0.0.1:8554/output/cam\_01} trên host.
+Docker Desktop dùng \texttt{host.docker.internal:8554} để gọi MediaMTX trên host,
+như YAML Docker hiện tại; \texttt{localhost} trong container là chính container.
+Nếu cả hai chạy cùng Docker network trên server, đổi host RTSP sang tên service
+MediaMTX. MediaMTX có thể chạy binary hoặc container; với bridge network, dùng
+RTSP/TCP và publish cổng 8554.\footnote{Tài liệu:
+\href{https://mediamtx.org/docs/kickoff/install}{MediaMTX -- Install};
+\href{https://docs.docker.com/desktop/features/networking/networking-how-tos/}
+{Docker Desktop -- Networking how-tos}.}
+
+\subsection*{Lệnh mẫu trên Windows CMD}
+Dùng một MediaMTX đang chạy sẵn; nếu chưa có server, có thể khởi tạo bằng
+lệnh đầu. Các bind mount nguồn phải tồn tại. Dockerfile đóng gói môi trường
+PyTorch/CUDA, dependencies, FFmpeg và source; weights, dữ liệu, log được mount.
+Base image đang khai báo: PyTorch 2.14.1, CUDA 12.6, cuDNN 9 runtime.
+\begin{Code}
+docker run -d --name mediamtx -e MTX_RTSPTRANSPORTS=tcp -p 8554:8554 bluenviron/mediamtx:1
+docker build -t multi-camera:dev .
+set "WEIGHTS_DIR=%CD%\yolo\results\detect\runs\train\person_vehicle\weights"
+set "WEIGHTS_TARGET=/app/yolo/results/detect/runs/train/person_vehicle/weights"
+mkdir logs
+docker run -d --name multi-camera --gpus all --stop-timeout 90 ^
+  -p 127.0.0.1:8000:8000 ^
+  --mount "type=bind,source=%CD%\configs,target=/app/configs,readonly" ^
+  --mount "type=bind,source=%WEIGHTS_DIR%,target=%WEIGHTS_TARGET%,readonly" ^
+  --mount "type=volume,source=multi-camera-data,target=/app/data" ^
+  --mount "type=bind,source=%CD%\logs,target=/app/logs" ^
+  multi-camera:dev python -m src.manager --host 0.0.0.0 --port 8000 ^
+  --cameras /app/configs/cameras.docker.yaml --model_mode shared ^
+  --log_file /app/logs/docker.log
+\end{Code}
+Container chạy API và RTSP không mở preview OpenCV; host xem bằng client RTSP.
+Log xuất trực tiếp ra \texttt{logs/docker.log}, DB nằm trong volume.
+\textbf{Lưu ý source hiện tại:} Dockerfile còn CMD gọi \texttt{src.api}, trong khi
+entry point đã chuyển sang \texttt{src.manager}; lệnh trên ghi đè CMD đúng.
+Đây là hướng dẫn triển khai, không phải một lượt benchmark Docker đã đo.
+
+\newpage
+\section{Môi trường đo, benchmark và lựa chọn}
+\subsection*{Môi trường và phương pháp}
+\textbf{Máy đo do người thực hiện xác nhận:} AMD Ryzen 7 7735HS,
+NVIDIA RTX 4050 Laptop 6 GB VRAM, RAM 16 GB.
+Chạy local trên Windows; sáu log tại
+\texttt{benchmark/local/\{1cam,4cam,8cam\}/\{share,per\}.log}.
+Log xác nhận CUDA0, batch tối đa 8, display và streaming bật,
+output $800\times450$, giới hạn 15 FPS.
+Thông số weights/confidence/classes/imgsz trình bày ở mục 3 là
+\textbf{cấu hình source hiện tại}; log chưa lưu đầy đủ để truy nguyên chính
+xác mọi tham số/phiên bản của các phiên đo. Docker chưa có số liệu đối chứng.
+
+Mỗi cấu hình có một phiên thành công. Chọn snapshot chạy định kỳ thứ 3 đến 9,
+khoảng giây 90--272, được 180,04--180,79 giây/cấu hình, tất cả camera connected.
+Loại phần khởi động và tiền tố lần chạy lỗi trong \texttt{8cam/per.log}.
+Thông lượng dùng toàn khoảng; latency lấy sáu snapshot sau mốc đầu:
+\[
+ F_{\rm total}=\frac{\Delta\texttt{processed\_frames}}{\Delta t},
+ \qquad F_{\rm cam}=\frac{F_{\rm total}}{N_{\rm camera}}.
+\]
+\vspace{-8pt}
+Ví dụ 4 camera \shared{}: $9\,374/180{,}146=52{,}04$ FPS.
+Latency là trung bình các \texttt{avg\_ms} cửa sổ 5 giây, gộp camera đồng trọng
+số; không phải trung bình toàn bộ frame trong 180 giây.
+
+\subsection*{Số liệu tổng hợp}
+\begin{center}
+\small
+\setlength{\tabcolsep}{7pt}
+\begin{tabular}{@{}crrrrrr@{}}
+\toprule
+\shortstack{Số\\camera} & \multicolumn{1}{c}{Phương án} &
+\shortstack{FPS\\tổng} & \shortstack{FPS/cam\\TB} &
+\shortstack{$L_{\rm proc}$\\(ms)} &
+\shortstack{$L_{\rm pipe}$\\(ms)} & \shortstack{FPS xuất\\TB/cam}\\
+\midrule
+1 & \shared & 28,61 & 28,61 & 37,46 & 61,28 & 12,71\\
+1 & \percam & 28,58 & 28,58 & 37,71 & 63,82 & 12,72\\
+\addlinespace
+4 & \shared & \textbf{52,04} & \textbf{13,01} & 71,33 & 113,74 & 12,77\\
+4 & \percam & 36,16 & 9,04 & 102,58 & 107,30 & 9,04\\
+\addlinespace
+8 & \shared & \textbf{29,26} & \textbf{3,66} & 212,64 & 220,84 & 3,66\\
+8 & \percam & 24,61 & 3,08 & 286,88 & 293,27 & 3,08\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$L_{\rm proc}$: từ khi Python nhận frame đến sau tracking/event và enqueue
+writer, trước drawing. $L_{\rm pipe}$: trường \texttt{e2e\_ms}, từ lúc nhận frame
+đến write/flush pipe FFmpeg; chưa gồm hoàn tất encode, mạng, RTSP server/client.
+FPS xuất dùng $\Delta\texttt{sent\_frames}/\Delta t$.
+
+\subsection*{Nhận xét trên số liệu}
+\begin{itemize}
+\item \textbf{1 camera:} chênh lệch thông lượng chỉ 0,09\%, hai mode gần tương
+đương; một lượt đo chưa chứng minh được ưu thế đáng kể.
+\item \textbf{4 camera:} \shared{} tăng thông lượng \textbf{43,9\%}, giảm
+$L_{\rm proc}$ \textbf{30,5\%}; từng camera đạt 12,92--13,05 FPS so với
+9,02--9,05. Tuy nhiên $L_{\rm pipe}$ \textbf{tăng 6,0\%}; log ghi nhận chờ queue
+đầu ra 36,89 so với 0,33 ms, và 169 frame output bị thay thế so với 0.
+Vì vậy ưu thế xử lý không đồng nghĩa mọi nhánh đều ít trễ hơn.
+\item \textbf{8 camera:} \shared{} tăng thông lượng \textbf{18,9\%}, giảm
+$L_{\rm proc}$ \textbf{25,9\%} và $L_{\rm pipe}$ \textbf{24,7\%}.
+Từng camera đạt 3,40--3,86 FPS. Nếu cần 15 FPS xử lý/camera, cả cấu hình 4 và 8
+camera hiện chưa đạt; chưa đủ dữ liệu tách riêng nút thắt GPU/decode/tracking/encode.
+\item \textbf{Ổn định trong khoảng đo:} không tăng reconnect/send-failure;
+queue sự kiện bằng 0 tại các mốc lấy mẫu. Với một camera, hai mode có khoảng
+2\,860 frame output bị thay thế do tốc độ xử lý lớn hơn tốc độ xuất.
+Đây là drop ở nhánh streaming, không phải số sự kiện bị bỏ sót.
+\end{itemize}
+
+\textbf{Lựa chọn: dùng \shared{} làm mặc định khi chạy nhiều camera.}
+Phương án này đạt thông lượng cao hơn, trễ xử lý thấp hơn và chỉ cần một model.
+Giữ \percam{} để đối chứng; chưa có lý do hiệu năng từ các log này để chọn mặc
+định. Tăng số camera vẫn cần đo lại theo FPS và độ trễ yêu cầu.
+
+\subsection*{Giới hạn và hướng kiểm chứng}
+Chỉ một lần chạy/cấu hình; chưa có khoảng tin cậy, số đo CPU/GPU/RAM/VRAM
+theo thời gian hay nhãn đối chứng độ chính xác sự kiện. Nguồn có capture FPS
+khác nhau (khoảng 24/30/60/120), nên ưu tiên so sánh hai mode cùng số camera;
+không suy ra khả năng scale tuyến tính. Hai mode đồng thời khác số bản model
+và batching (batch nhiều camera so với tuần tự batch 1); kết luận áp dụng cho
+hai cách triển khai hiện tại, chưa tách riêng tác động của từng yếu tố.
+Cần lặp ít nhất ba lượt/mode trên cùng
+video, model và cấu hình; đo thêm tài nguyên, tỷ lệ đếm đúng và điều kiện mất
+kết nối. So local/Docker phải giữ display, output, encoder và nguồn tương
+đương; dữ liệu hiện tại chưa cho phép kết luận Docker nhanh hơn.
+
+% Nguồn kiểm chứng: src/manager.py, camera_worker.py, event_engine.py,
+% tracker.py, output_workers.py, stream_ouput.py, event_writer.py, api.py;
+% configs/model.yaml, cameras.yaml, cameras.docker.yaml, logging.yaml.
+% FPS: snapshot định kỳ thứ 3 -> thứ 9, 17/10/2026 (+07:00).
+% 1cam/per.log:   16:21:35.354 -> 16:24:35.406; 5146 / 180.052 s.
+% 1cam/share.log: 16:27:48.930 -> 16:30:48.966; 5150 / 180.036 s.
+% 4cam/per.log:   16:40:44.899 -> 16:43:45.192; 6519 / 180.293 s.
+% 4cam/share.log: 16:46:11.942 -> 16:49:12.088; 9374 / 180.146 s.
+% 8cam/per.log:   17:05:31.300 -> 17:08:32.089; 4450 / 180.789 s.
+% 8cam/share.log: 17:14:23.936 -> 17:17:24.402; 5281 / 180.466 s.
+% Latency: seq[3:9] của từng camera, loại snapshot khi dừng.
+\end{document}
+

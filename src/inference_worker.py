@@ -19,6 +19,7 @@ class InferenceWorker:
         logger.info("Inference model loaded in %.2f seconds", time.perf_counter() - started)
 
     def predict(self, frame_packets: List[FramePacket]) -> List[DetectionPacket]:
+        """Hàm predict theo batch"""
         output = []
         if not frame_packets:
             return output

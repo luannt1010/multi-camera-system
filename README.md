@@ -29,6 +29,16 @@ python -m src.manager --cameras configs/cameras.yaml --model configs/model.yaml
 
 Để benchmark model dùng chung và model riêng từng camera, chọn `--model-mode shared` hoặc `--model-mode per_camera`; xem [hướng dẫn benchmark hai chế độ model](docs/benchmark-models.md).
 
+API quản lý chạy bằng `python -m src.api`, tự khởi động cùng một manager. Mở `http://127.0.0.1:8000/docs` để xem trạng thái/FPS, bật tắt camera và lọc lịch sử sự kiện. Xem [hướng dẫn API](docs/api.md) để biết endpoint, ví dụ request và cách chọn khoảng thời gian.
+
+Chạy API cùng cửa sổ preview bằng một lệnh:
+
+```powershell
+python -m src.api --display
+```
+
+Thêm `--no-stream` nếu chỉ cần API và preview. Cả hai chế độ `shared` và `per_camera` đều hỗ trợ. Q, Esc hoặc đóng một cửa sổ preview sẽ dừng cả pipeline và API; Ctrl+C cũng dừng và đợi ghi hết sự kiện. Bật/tắt camera qua API sẽ mở/đóng cửa sổ tương ứng.
+
 Sửa nguồn thực tế trong `configs/cameras.yaml`: URL RTSP, đường dẫn video, hoặc số webcam. Các IP hiện có là cấu hình mẫu, cần thay theo hệ thống của bạn. Mỗi camera phải có ID và RTSP output riêng. Bỏ `output` hoặc đặt `rtsp_url: null` để tắt đầu ra camera đó. RTSP cần server nhận publish, ví dụ MediaMTX, được khởi động riêng.
 
 `configs/model.yaml` trỏ tới weight đã có trong repository. Mặc định giữ GPU `cuda:0`; đặt `device: cpu` nếu không có CUDA. `classes: [0]` giữ bộ lọc class hiện tại; đặt `classes: null` để xử lý mọi class của model.
@@ -91,7 +101,7 @@ Mỗi camera có capture thread và một slot frame mới nhất. Mặc định
 
 Mỗi RTSP có worker và một slot riêng, giới hạn tốc độ gửi, thử kết nối lại sau lỗi. Watchdog kết thúc FFmpeg nếu ghi pipe bị treo quá 3 giây. FPS output là tốc độ gửi tối đa: khi inference chậm hơn, hệ thống không tự nội suy hay lặp frame để đạt FPS đó.
 
-SQLite được tạo và sử dụng trên một writer thread, dùng WAL. JPEG snapshot lưu base64 ngay trong bảng `events`, giữ định dạng module cũ. Chỉ tạo bản ghi khi đi vào vùng cấm hoặc vượt đoạn vạch; không lưu lặp ở mọi frame còn trong vùng. Ảnh snapshot là ảnh nguồn chưa vẽ, timestamp là UTC lúc xử lý sự kiện. Các sự kiện cùng frame được ghi chung một transaction. Khi writer lỗi hoặc queue đầy, hệ thống báo lỗi và dừng thay vì âm thầm mất bản ghi; sự kiện chưa nhận do queue đầy không được lưu. Chưa có chính sách xóa dữ liệu cũ hay khôi phục bộ đếm sau restart.
+`EventWriter` quản lý cả ghi và đọc SQLite. Pipeline gửi qua `WriterWorker.submit()`, ghi trên một writer thread và dùng WAL; mỗi request API tạo một `EventWriter`, truy vấn rồi đóng trong cùng thread bằng kết nối riêng. JPEG snapshot lưu base64 ngay trong bảng `events`, giữ định dạng module cũ. Chỉ tạo bản ghi khi đi vào vùng cấm hoặc vượt đoạn vạch; không lưu lặp ở mọi frame còn trong vùng. Ảnh snapshot là ảnh nguồn chưa vẽ, timestamp lấy bằng `datetime.now()` theo giờ hệ thống lúc xử lý sự kiện. Các sự kiện cùng frame được ghi chung một transaction. Khi writer lỗi hoặc queue đầy, hệ thống báo lỗi và dừng thay vì âm thầm mất bản ghi; sự kiện chưa nhận do queue đầy không được lưu. Chưa có chính sách xóa dữ liệu cũ hay khôi phục bộ đếm sau restart.
 
 Vượt vạch được xác định bằng tâm bbox, giao với đoạn vạch thực tế. Tên `left_to_right` tương ứng chuyển từ phía âm sang phía dương theo tích có hướng của hai điểm cấu hình; đảo thứ tự điểm sẽ đảo hướng. Vùng cấm bao gồm đường biên. Trạng thái ID không xuất hiện trong 60 giây được dọn.
 

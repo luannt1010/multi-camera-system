@@ -12,23 +12,15 @@ def resize_frame(frame, max_width=800, max_height=450):
     scale = min(max_width / w,max_height / h, 1.0)
     if scale == 1.0:
         return frame
-    return cv2.resize(
-        frame,
-        (int(w * scale), int(h * scale)),
-        interpolation=cv2.INTER_AREA
-    )
+    return cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
 def polygon_to_bbox(polygon_coords):
-  """
-    polygon_coords: list or array of shape (N, 2) with (x, y) points
-    Returns: [xmin, ymin, xmax, ymax]
-    """
-  pts = np.array(polygon_coords)
-  xmin = np.min(pts[:, 0])
-  ymin = np.min(pts[:, 1])
-  xmax = np.max(pts[:, 0])
-  ymax = np.max(pts[:, 1])
-  return [xmin, ymin, xmax, ymax]
+    pts = np.array(polygon_coords)
+    xmin = np.min(pts[:, 0])
+    ymin = np.min(pts[:, 1])
+    xmax = np.max(pts[:, 0])
+    ymax = np.max(pts[:, 1])
+    return [xmin, ymin, xmax, ymax]
 
 def make_status_frame(camera_id, status):
     frame = np.zeros((360, 640, 3), dtype=np.uint8)
@@ -79,3 +71,20 @@ def draw_results(packet, result, geometry, performance=None):
                     font_scale, (0, 255, 255), thickness)
     return frame
 
+# if __name__ == "__main__":
+#
+#     cap = cv2.VideoCapture(r"D:\private\Videos\traffic_pl_1.mp4")
+#
+#     while True:
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
+#
+#         cv2.imwrite("frame.png", frame)
+#         cv2.imshow("", frame)
+#
+#         if cv2.waitKey(1) & 0xFF == ord("q"):
+#             break
+#
+#     cap.release()
+#     cv2.destroyAllWindows()

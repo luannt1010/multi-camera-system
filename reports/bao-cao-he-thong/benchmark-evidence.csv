@@ -1,0 +1,7 @@
+camera_count,mode,log_path,date,timezone,start_time,end_time,interval_seconds,delta_processed_frames,start_status_line,end_status_line,total_fps,average_processing_fps_per_camera,processing_latency_ms,pipe_latency_ms,average_output_fps_per_camera
+1,shared,benchmark/local/1cam/share.log,2026-10-17,+07:00,16:27:48.930,16:30:48.966,180.036,5150,388,1148,28.60539,28.60539,37.45500,61.28333,12.70857
+1,per_camera,benchmark/local/1cam/per.log,2026-10-17,+07:00,16:21:35.354,16:24:35.406,180.052,5146,383,1167,28.58063,28.58063,37.71333,63.81500,12.71855
+4,shared,benchmark/local/4cam/share.log,2026-10-17,+07:00,16:46:11.942,16:49:12.088,180.146,9374,505,1695,52.03557,13.00889,71.33417,113.73917,12.77436
+4,per_camera,benchmark/local/4cam/per.log,2026-10-17,+07:00,16:40:44.899,16:43:45.192,180.293,6519,465,1511,36.15781,9.03945,102.57667,107.30083,9.03945
+8,shared,benchmark/local/8cam/share.log,2026-10-17,+07:00,17:14:23.936,17:17:24.402,180.466,5281,256,813,29.26313,3.65789,212.63583,220.83875,3.65789
+8,per_camera,benchmark/local/8cam/per.log,2026-10-17,+07:00,17:05:31.300,17:08:32.089,180.789,4450,283,745,24.61433,3.07679,286.87563,293.27229,3.07679

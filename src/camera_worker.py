@@ -20,7 +20,7 @@ class CameraWorker:
         self.running = False
         self.stop_event = threading.Event()
 
-        #Only keep the latest frame
+        #queue giữ frame mới nhất
         self.frame_queue = Queue(maxsize=1)
         self.status = "disconnected"
         self.fps = 30.0
@@ -46,6 +46,7 @@ class CameraWorker:
             self.type = "file"
 
     def _set_status(self, status: str) -> None:
+        """Hàm set status và log nếu trùng out"""
         with self.lock:
             previous = self.status
             self.status = status
@@ -82,6 +83,7 @@ class CameraWorker:
                 )
 
     def get_status(self) -> str:
+        """Hàm lấy trạng thái hiện tại"""
         with self.lock:
             return self.status
 
@@ -105,8 +107,8 @@ class CameraWorker:
                 self._reconnect_attempts += 1
 
     def _init_cap(self) -> bool:
+        """Hàm khởi tạo cap"""
         source = self.config.source
-
         if self.type == "webcam":
             cap = cv2.VideoCapture(int(source))
         elif self.type == "rtsp":
@@ -116,16 +118,13 @@ class CameraWorker:
             ])
         else:
             cap = cv2.VideoCapture(source)
-
         if not cap.isOpened():
             cap.release()
             return False
-
         self.cap = cap
         self.generation += 1
-
         if self.type == "file":
-            fps = cap.get(cv2.CAP_PROP_FPS) # k prop video bị phát nhanh
+            fps = cap.get(cv2.CAP_PROP_FPS)
             self.fps = fps if 1 <= fps <= 120 else 30.0
             logger.debug(
                 "Source video frame rate: %.2f FPS", self.fps,
@@ -135,7 +134,7 @@ class CameraWorker:
         return True
 
     def _put_latest(self, frame: np.ndarray) -> None:
-
+        """Hàm put fram vào queue"""
         packet = FramePacket(
             camera_id=self.config.camera_id,
             frame=frame,
@@ -165,12 +164,14 @@ class CameraWorker:
             self.frame_queue.put_nowait(packet)
 
     def get_frame(self) -> FramePacket | None:
+        """Hàm get frame packet"""
         try:
             return self.frame_queue.get_nowait()
         except Empty:
             return None
 
     def _clear_queue(self) -> None:
+        """Hàm clear queue"""
         while True:
             try:
                 self.frame_queue.get_nowait()
@@ -178,6 +179,7 @@ class CameraWorker:
                 break
 
     def start(self) -> None:
+        """Hàm chạy thread cho camera"""
         if self.running:
             return
         self.stop_event.clear()
@@ -190,9 +192,9 @@ class CameraWorker:
         self.thread.start()
 
     def _update_frame(self) -> None:
+        """Hàm update latest frame"""
         try:
             while self.running:
-
                 # Connect / Reconnect
                 if self.cap is None:
                     self._set_status("connecting")
@@ -201,7 +203,6 @@ class CameraWorker:
                         opened = self._init_cap()
                     except cv2.error:
                         opened = False
-
                     if not opened:
                         self._set_status("disconnected")
                         self._clear_queue()
@@ -209,7 +210,6 @@ class CameraWorker:
                         continue
 
                 start_time = time.perf_counter()
-
                 try:
                     ret, frame = self.cap.read()
                 except cv2.error:
@@ -222,15 +222,15 @@ class CameraWorker:
                     self._set_status("disconnected")
                     self._clear_queue()
                     self._release_cap()
-                    # For files, this restarts playback
+                    # set delay
                     self.stop_event.wait(2)
                     continue
 
-                # Put newest frame into queue
+                # put frame mới nhất
                 self._put_latest(frame)
                 self._set_status("connected")
 
-                # MP4: limit reading to source FPS
+                # giới hạn read frame nếu là file, nếu k bị nhanh
                 if self.type == "file":
                     elapsed = time.perf_counter() - start_time
                     delay = max(0.0, (1.0 / self.fps) - elapsed)
@@ -246,7 +246,7 @@ class CameraWorker:
             self._set_status("stopped")
 
     def _release_cap(self) -> None:
-        # Called only by the capture thread
+        """Hàm giải phóng tài nguyên"""
         if self.cap is not None:
             self.cap.release()
             self.cap = None
