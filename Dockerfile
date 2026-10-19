@@ -28,4 +28,4 @@ USER app
 
 EXPOSE 8000
 
-CMD ["python", "-m", "src.api", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "src.manager", "--host", "0.0.0.0", "--port", "8000", "--cameras", "/app/configs/cameras.docker.yaml"]
