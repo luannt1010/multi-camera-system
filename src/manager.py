@@ -1,4 +1,3 @@
-"""Run with python -m src.manager (or python src/manager.py)."""
 import argparse
 from concurrent.futures import Future
 from dataclasses import dataclass
