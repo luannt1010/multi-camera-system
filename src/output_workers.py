@@ -1,4 +1,3 @@
-"""Bounded asynchronous sinks. SQLite belongs exclusively to its writer thread."""
 import logging
 import threading
 import time
@@ -109,10 +108,8 @@ class StreamWorker:
         logger.info("RTSP worker started", extra={"camera_id": self.camera_id})
 
     def submit(self, frame, *, captured_at=None):
-        """Queue the latest frame; capture timestamps use ``perf_counter``.
-
-        Without a capture timestamp the output still works, but cannot benchmark
-        capture-to-FFmpeg latency for that frame.
+        """
+        Thêm latest frame vào queue
         """
         self.check()
         item = _StreamFrame(frame, captured_at, self._clock())
@@ -130,10 +127,8 @@ class StreamWorker:
                 self.queue.put_nowait(item)
 
     def get_metrics(self):
-        """Return output health without waiting for the encoder.
-
-        ``e2e_ms`` ends when ``StreamOutput.send`` has flushed Python's pipe
-        to FFmpeg. It does not measure network transport or viewer playback.
+        """Trả ra metrics.
+        ``e2e_ms`` kết thúc khi ``StreamOutput.send`` 
         """
         now = self._clock()
         with self._metrics_lock:
