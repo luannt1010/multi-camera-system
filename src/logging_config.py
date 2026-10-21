@@ -1,4 +1,3 @@
-"""Application logging: bounded asynchronous dispatch, rotation and redaction."""
 import atexit
 import copy
 from datetime import datetime
