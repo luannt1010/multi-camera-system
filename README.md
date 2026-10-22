@@ -133,7 +133,7 @@ Chạy lệnh trên CMD
 
 ```bash
 cd multi-camera-system
-set "PROJECT_DIR=multi-camera-system"
+set "PROJECT_DIR=<YOUR_PROJECT_DIR>"
 set "WEIGHTS_DIR=%PROJECT_DIR%\yolo\results\detect\runs\train\person_vehicle\weights"
 cd /d "%PROJECT_DIR%"
 if not exist "configs\cameras.yaml" copy "configs\cameras.docker.yaml" "configs\cameras.docker.yaml" #Copy file yaml vào env docker
@@ -147,13 +147,19 @@ docker build -t multi-camera:latest .
 docker run -d --name multi-camera --gpus all -p 127.0.0.1:8000:8000 --stop-timeout 90 --mount "type=bind,source=%PROJECT_DIR%\configs,target=/app/configs,readonly" --mount "type=bind,source=%WEIGHTS_DIR%,target=/app/yolo/results/detect/runs/train/person_vehicle/weights,readonly" --mount "type=volume,source=multi-camera-data,target=/app/data" --mount "type=volume,source=multi-camera-logs,target=/app/logs" multi-camera:latest python -m src.manager --host 0.0.0.0 --port 8000 --cameras /app/configs/cameras.docker.yaml
 ```
 
+Một số lệnh khởi chạy, dừng và xem log
+```bash
+docker start multi-camera
+docker stop multi-camera
+docker logs -f --tail 100 multi-camera # Xem log
+```
+
 Lệnh này khởi động pipeline và API, không mở preview. Truy cập [Swagger UI](http://127.0.0.1:8000/docs) từ host. Khi mở video bằng trình xem trên host, dùng địa chỉ server từ host, ví dụ `rtsp://localhost:8554/output/cam_01`; tên `host.docker.internal` trong YAML dùng cho kết nối từ container.
 
 - **Model:** Dockerfile không copy weights và `.dockerignore` loại `yolo/`, `*.pt`; mount `yolo/` để đường dẫn weights mặc định tồn tại trong container.
 - **Dữ liệu:** mount `data/` và `logs/` để giữ database/log sau khi container bị xóa. Trên Linux, hai thư mục cần cho phép UID/GID `10001` của container ghi.
 - **Mạng RTSP:** `localhost` trong container trỏ về chính container. Dùng `host.docker.internal` nếu RTSP server ở host, hoặc địa chỉ camera/server thực tế. Docker Desktop cung cấp tên này; `--add-host` bổ sung ánh xạ cho Docker Engine. Xem [tài liệu Docker về host gateway](https://docs.docker.com/reference/cli/docker/container/run/#add-entries-to-container-hosts-file---add-host).
 - **CPU:** đặt `model.device: cpu` và bỏ `--gpus all` khỏi lệnh chạy.
-- **Lệnh khởi động:** ví dụ ghi đè `CMD` hiện tại của Dockerfile (vẫn gọi `src.api`) bằng entry point `src.manager`.
 
 Dừng từ terminal khác bằng `docker stop --timeout 60 multi-camera-system`.
 
