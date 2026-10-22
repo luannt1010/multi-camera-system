@@ -127,32 +127,24 @@ Entry point hiện tại là **`python -m src.manager`**. Các cờ dùng dấu 
 
 ## Chạy Docker
 
-Cần Docker chạy Linux container; để dùng GPU, Docker phải được cấu hình truy cập GPU NVIDIA. Ví dụ dưới đây dùng RTSP server trên host, tương ứng `configs/cameras.docker.yaml`.
+Chạy lệnh trên CMD
 
 ### 1. Build image
 
-```powershell
-docker build -t multi-camera-system .
-New-Item -ItemType Directory -Force data, logs
+```bash
+cd multi-camera-system
+set "PROJECT_DIR=multi-camera-system"
+set "WEIGHTS_DIR=%PROJECT_DIR%\yolo\results\detect\runs\train\person_vehicle\weights"
+cd /d "%PROJECT_DIR%"
+if not exist "configs\cameras.yaml" copy "configs\cameras.docker.yaml" "configs\cameras.docker.yaml" #Copy file yaml vào env docker
+notepad configs\cameras.docker.yaml # Kiểm tra lại cổng -> chuyển localhost,... -> host.docker.internal:8554, VD: rtsp://host.docker.internal:8554/output/cam_01
+docker build -t multi-camera:latest .
 ```
 
 ### 2. Khởi chạy container
 
-```powershell
-docker run --rm --init --name multi-camera-system `
-  --gpus all `
-  --add-host host.docker.internal:host-gateway `
-  -p 8000:8000 `
-  -v "${PWD}/configs:/app/configs:ro" `
-  -v "${PWD}/yolo:/app/yolo:ro" `
-  -v "${PWD}/data:/app/data" `
-  -v "${PWD}/logs:/app/logs" `
-  multi-camera-system `
-  python -m src.manager `
-    --host 0.0.0.0 --port 8000 `
-    --cameras /app/configs/cameras.docker.yaml `
-    --model /app/configs/model.yaml `
-    --model_mode shared
+```bash
+docker run -d --name multi-camera --gpus all -p 127.0.0.1:8000:8000 --stop-timeout 90 --mount "type=bind,source=%PROJECT_DIR%\configs,target=/app/configs,readonly" --mount "type=bind,source=%WEIGHTS_DIR%,target=/app/yolo/results/detect/runs/train/person_vehicle/weights,readonly" --mount "type=volume,source=multi-camera-data,target=/app/data" --mount "type=volume,source=multi-camera-logs,target=/app/logs" multi-camera:latest python -m src.manager --host 0.0.0.0 --port 8000 --cameras /app/configs/cameras.docker.yaml
 ```
 
 Lệnh này khởi động pipeline và API, không mở preview. Truy cập [Swagger UI](http://127.0.0.1:8000/docs) từ host. Khi mở video bằng trình xem trên host, dùng địa chỉ server từ host, ví dụ `rtsp://localhost:8554/output/cam_01`; tên `host.docker.internal` trong YAML dùng cho kết nối từ container.
